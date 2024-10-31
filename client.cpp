@@ -82,7 +82,15 @@ if((socket_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1){
         std::string messg_recv;
         char buff_recv[MAXDATASIZE];
         int recv_byes;
-        if(())
+        if((recv_byes = recv(socket_fd, buff_recv, MAXDATASIZE-1, 0)) == -1){
+            perror("recv");
+            exit(1);
+        }
+
+        buff_recv[recv_byes] = '\0';
+        messg_recv = std::string(buff_recv);
+
+        std::cout << "client recieved: " << messg_recv << std::endl;
 
     }
 
