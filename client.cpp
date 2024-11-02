@@ -33,7 +33,7 @@ int main (int argc, char *argv[]) {
     }
 
     std::memset(&hints, 0, sizeof hints);
-hints.ai_family = AF_UNSPEC;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
     int gai_error_code;
@@ -42,7 +42,7 @@ hints.ai_family = AF_UNSPEC;
     }
 
     for(p = servinfo; p != NULL; p = p->ai_next){
-if((socket_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1){
+    if((socket_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1){
             perror("client: socket");
             continue;
         }
