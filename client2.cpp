@@ -5,7 +5,6 @@
 #include <map>
 #include <queue>
 #include <string>
-#include <bitset>
 #include <sys/poll.h>
 #include <sys/wait.h>
 #include <cstdlib>
@@ -20,8 +19,6 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <poll.h>
-
-using namespace  std;
 
 const char PORT[] = "3490";
 const int BACKLOG = 10;
@@ -153,13 +150,6 @@ struct message{
     char source[16];
     char destination[16];
     std::string content;
-
-    message(){
-        for(int i = 0; i < 16; i++){
-            source[i] = '\0';
-            destination[i] = '\0';
-        }
-    }
 };
 
 class connection{
@@ -171,19 +161,13 @@ private:
 
 public:
     std::queue<message> messages;
-    char user[16];
+    std::string user;
     connection(){
         left_to_read = 0;
-        for(int i = 0 ; i < 16; i++){
-            user[i] = '\0';
-        }
     }
     connection(int fd){
         this->fd = fd;
         left_to_read = 0;
-        for(int i = 0 ; i < 16; i++){
-            user[i] = '\0';
-        }
     }
 
     void process_bytes(char c[], int n){
@@ -219,14 +203,14 @@ public:
             m.content += bytes.front();
             bytes.pop();
         }
-        left_to_read = 0;
         return m;
     }
 
     int send_message(message m){
         int curr_byte = 0;
-        char *bmessg = (char *)malloc((m.size+10) * sizeof(char));
-        uint byte_mask = ((1<<8)-1) << 24;
+        char *bmessg = (char *)malloc(m.size+4 * sizeof(char));
+
+        uint byte_mask = 1111U << 24;
         char byte = (m.size & byte_mask) >> 24;
         bmessg[curr_byte] = byte;
         curr_byte++;
@@ -236,9 +220,6 @@ public:
             bmessg[curr_byte] = byte;
             curr_byte++;
         }
-
-        bmessg[curr_byte] = m.type;
-        curr_byte++;
 
         for(int i = 0; i < 16; i++){
             bmessg[curr_byte] = m.source[i];
@@ -250,14 +231,15 @@ public:
         }
         for(char c : m.content){
             bmessg[curr_byte] = c;
-            curr_byte++;
+            curr_byte = 0;
         }
 
         int total = 0;
-        int bytes_left = m.size+4;
-        
+        int bytes_left = m.size;
+        int n;
+
         while(total < m.size+4){
-            int n = send(fd, bmessg+total, bytes_left, 0);
+            n = send(fd, bmessg+total, bytes_left, 0);
             if(n == -1){
                 return total;
             }
@@ -266,38 +248,8 @@ public:
         }
 
         delete [] bmessg;
-        cout << "send ok" << endl;
         return 0;
     }
-
-    message process_input(std::string input){
-        message m;
-        string command;
-        int pos = 0;
-        while(input[pos] != ' '){
-            command += input[pos];
-            pos ++;
-        }
-        pos ++;
-        if(command == "/to"){
-            string dest;
-            while(input[pos] != ' '){
-                dest += input[pos];
-                pos++;
-            }
-            pos ++;
-            input = input.substr(pos, string::npos);
-            
-            m.type = 0;
-            m.size = 33 + input.size();
-            strcpy(m.source, user);
-            strcpy(m.destination, dest.c_str());
-            m.content = input;
-        }
-        
-        return m;
-    }
-
 };
 
 
@@ -360,12 +312,12 @@ int main (int argc, char *argv[]) {
                 int recv_bytes = recv(fd, buff, sizeof buff, 0);
                 buff[recv_bytes] = '\0';
                 messg = std::string(buff);
-                
+
                 if(recv_bytes <= 0){
                     if(recv_bytes == 0){
-                        std::cout << "server: socket " << fd << " hung up. BYE! " << socket_connection_map[fd].user << std::endl;
                         user_socket_map.erase(socket_connection_map[fd].user);
                         socket_connection_map.erase(fd);
+                        std::cout << "server: socket " << fd << " hung up. BYE!" << std::endl;
                     }
                     else{
                         std::cout << fd << " ";
@@ -379,13 +331,12 @@ int main (int argc, char *argv[]) {
                     while(!socket_connection_map[fd].messages.empty()){
                         message m = socket_connection_map[fd].messages.front();
                         socket_connection_map[fd].messages.pop();
-                        std::cout << "got message " << m.type << " " << m.source << " " << m.destination << " " << m.content << std::endl;
                         if(m.type == 0){
                             socket_connection_map[user_socket_map[std::string(m.destination)]].send_message(m);
                         }
                         else{
                             user_socket_map[m.source] = fd;
-                            strcpy(socket_connection_map[fd].user, m.source);
+                            socket_connection_map[fd].user = std::string(m.source);
                         }
                     }
                 }

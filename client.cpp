@@ -8,11 +8,224 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-
+#include <poll.h>
 #include <arpa/inet.h>
+#include <cerrno>
+#include <queue>
+#include <bitset>
+#include <fcntl.h>
+
+using namespace  std;
 
 const char PORT[] = "3490";
-const int MAXDATASIZE = 100;
+const int MAXDATASIZE = 256;
+
+class pfds_set{
+private:
+        pollfd *pfds;
+        int fd_size;
+        int fd_count;
+public:
+    pfds_set(){
+        fd_size = 1;
+        fd_count = 0;
+        pfds = (pollfd *)malloc(sizeof *pfds * fd_size);
+    }
+
+    ~pfds_set(){
+        delete [] pfds;
+    }
+
+    void insert(int fd){
+        if(fd_count == fd_size){
+            fd_size <<= 1;
+            pfds = (pollfd *)realloc(pfds, sizeof(*pfds)*(fd_size));
+        }
+        pfds[fd_count].fd = fd;
+        pfds[fd_count].events = POLLIN;
+        fd_count++;
+    }
+
+    int erase(int fd){
+        int i = 0;
+        for(; i < fd_size and pfds[i].fd != fd; i++);
+        if(pfds[i].fd == fd){
+            pfds[i] = pfds[fd_count-1];
+            fd_count--;
+            return fd_count;
+        }
+        return -1;
+    }
+
+    int size(){
+        return fd_count;
+    }
+
+    pollfd * begin(){
+        return pfds;
+    }
+
+    pollfd * end(){
+        return pfds + fd_count*sizeof(*pfds);
+    }
+};
+
+struct message{
+    int type;
+    unsigned int size;
+    char source[16];
+    char destination[16];
+    std::string content;
+
+    message(){
+        for(int i = 0; i < 16; i++){
+            source[i] = '\0';
+            destination[i] = '\0';
+        }
+    }
+};
+
+class connection{
+
+private:
+    std::queue<char> bytes;
+    unsigned int left_to_read = 0;
+    int fd;
+
+public:
+    std::queue<message> messages;
+    char user[16];
+    connection(){
+        left_to_read = 0;
+        for(int i = 0 ; i < 16; i++){
+            user[i] = '\0';
+        }
+    }
+    connection(int fd){
+        this->fd = fd;
+        left_to_read = 0;
+        for(int i = 0 ; i < 16; i++){
+            user[i] = '\0';
+        }
+    }
+
+    void process_bytes(char c[], int n){
+        for(int i = 0; i < n; i++){
+            bytes.push(c[i]);
+        }
+        if(bytes.size() >= 4 and left_to_read == 0){
+            for(int i = 0; i < 4; i++){
+                left_to_read <<= 8;
+                left_to_read += bytes.front();
+                bytes.pop();
+            }
+        }
+        if(bytes.size() >= left_to_read){
+            messages.push(get_message());
+        }
+    }
+
+    message get_message(){
+        message m;
+        m.size = left_to_read;
+        m.type = bytes.front();
+        bytes.pop();
+        for(int i = 0; i < 16; i++){
+            m.source[i] = bytes.front();
+            bytes.pop();
+        }
+        for(int i = 0; i < 16; i++){
+            m.destination[i] = bytes.front();
+            bytes.pop();
+        }
+        for(int i = 0; i < m.size-33; i++){
+            m.content += bytes.front();
+            bytes.pop();
+        }
+        left_to_read = 0;
+        return m;
+    }
+
+    int send_message(message m){
+        int curr_byte = 0;
+        char *bmessg = (char *)malloc((m.size+10) * sizeof(char));
+        uint byte_mask = ((1<<8)-1) << 24;
+        char byte = (m.size & byte_mask) >> 24;
+        bmessg[curr_byte] = byte;
+        curr_byte++;
+        for(int i = 16; i >= 0; i-=8){
+            byte_mask >>= 8;
+            byte = (m.size & byte_mask) >> i;
+            bmessg[curr_byte] = byte;
+            curr_byte++;
+        }
+
+        bmessg[curr_byte] = m.type;
+        curr_byte++;
+
+        for(int i = 0; i < 16; i++){
+            bmessg[curr_byte] = m.source[i];
+            curr_byte++;
+        }
+        for(int i = 0; i < 16; i++){
+            bmessg[curr_byte] = m.destination[i];
+            curr_byte++;
+        }
+        for(char c : m.content){
+            bmessg[curr_byte] = c;
+            curr_byte++;
+        }
+
+        int total = 0;
+        int bytes_left = m.size+4;
+        
+        while(total < m.size+4){
+            int n = send(fd, bmessg+total, bytes_left, 0);
+            if(n == -1){
+                return total;
+            }
+            total += n;
+            bytes_left -= n;
+        }
+
+        delete [] bmessg;
+        cout << "send ok" << endl;
+        return 0;
+    }
+
+    message process_input(std::string input){
+        message m;
+        if(input[0] != '/'){
+
+        }
+        else{
+            string command;
+            int pos = 0;
+            while(input[pos] != ' '){
+                command += input[pos];
+                pos ++;
+            }
+            pos ++;
+            if(command == "/to"){
+                string dest;
+                while(input[pos] != ' '){
+                    dest += input[pos];
+                    pos++;
+                }
+                pos ++;
+                std::string messg = input.substr(pos, string::npos);
+                
+                m.type = 0;
+                m.size = 33 + messg.size();
+                strcpy(m.source, user);
+                strcpy(m.destination, dest.c_str());
+                m.content = messg;
+            }
+        }
+
+        return m;
+    }
+};
 
 void *get_in_addr(sockaddr *sa){
     if(sa->sa_family == AF_INET){
@@ -27,8 +240,8 @@ int main (int argc, char *argv[]) {
     addrinfo hints, *servinfo, *p;
     char s[INET6_ADDRSTRLEN];
 
-    if(argc != 2){
-        std::cerr << "usage: clinet hostname" << std::endl;
+    if(argc != 3){
+        std::cerr << "usage: clinet hostname username" << std::endl;
         exit(1);
     }
 
@@ -65,33 +278,66 @@ int main (int argc, char *argv[]) {
 
     freeaddrinfo(servinfo);
 
+    pfds_set pfds;
+    pfds.insert(socket_fd);
+    pfds.insert(0);
+
+    connection c(socket_fd);
+    strcpy(c.user, argv[2]);
+    message auth_messg;
+    auth_messg.size = 33;
+    auth_messg.type = 1;
+    strcpy(auth_messg.source, c.user);
+    strcpy(auth_messg.destination, c.user);
+    c.send_message(auth_messg);
+
     while(true){
-        std::string messg_send;
-        std::cin >> messg_send;
-        std::cout << "client sending: " << messg_send << ", size: " << messg_send.size() << std::endl;
-        
-        if(send(socket_fd, messg_send.c_str(), messg_send.length(), 0) == -1){
-            perror("send");
+
+        int poll_count = poll(pfds.begin(), pfds.size(), -1);
+        if(poll_count == -1){
+            std::perror("poll");
             exit(1);
         }
+        for(int i = 0; i < pfds.size(); i++){
+            auto pollres = pfds.begin()[i];
+            if(!(pollres.revents & POLLIN))
+                continue;
+            int fd = pollres.fd;
+            if(fd == 0){
+                char buff[MAXDATASIZE];
+                std::string messg;
+                int recv_bytes = read(fd, buff, sizeof buff);
+                buff[recv_bytes-1] = '\0';
+                messg = std::string(buff);
 
-        if(messg_send == "exit"){
-            break;
+                if(messg.size() > MAXDATASIZE){
+                    std::cout << "hold up, cowboy" << std::endl;
+                    continue;
+                }
+                c.send_message(c.process_input(messg));
+            }
+            else{
+                char buff[MAXDATASIZE];
+                std::string messg;
+                int recv_bytes = recv(fd, buff, sizeof buff, 0);
+                buff[recv_bytes] = '\0';
+                messg = std::string(buff);
+
+                if(recv_bytes <= 0){
+                    perror("recv");
+                    close(socket_fd);
+                    exit(1);
+                }
+                else{
+                    c.process_bytes(buff, recv_bytes);
+                    while(!c.messages.empty()){
+                        message m = c.messages.front();
+                        c.messages.pop();
+                        std::cout << "got message from: " << m.source << " \"" << m.content << "\"" << std::endl;
+                    }
+                }
+            }
         }
-
-        std::string messg_recv;
-        char buff_recv[MAXDATASIZE];
-        int recv_byes;
-        if((recv_byes = recv(socket_fd, buff_recv, MAXDATASIZE-1, 0)) == -1){
-            perror("recv");
-            exit(1);
-        }
-
-        buff_recv[recv_byes] = '\0';
-        messg_recv = std::string(buff_recv);
-
-        std::cout << "client recieved: " << messg_recv << std::endl;
-
     }
 
     close(socket_fd);
